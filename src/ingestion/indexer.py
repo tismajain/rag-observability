@@ -24,7 +24,10 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import (
     Distance,
+    FieldCondition,
+    Filter,
     HnswConfigDiff,
+    MatchValue,
     PayloadSchemaType,
     PointStruct,
     VectorParams,
@@ -92,6 +95,7 @@ async def init_qdrant() -> None:
         await client.create_payload_index(name, "organization_id", PayloadSchemaType.KEYWORD)
         await client.create_payload_index(name, "access_subjects", PayloadSchemaType.KEYWORD)
         await client.create_payload_index(name, "authorization_ready", PayloadSchemaType.BOOL)
+        await client.create_payload_index(name, "searchable", PayloadSchemaType.BOOL)
         log.info(
             "ingestion.indexer.collection_created",
             collection=name,
@@ -121,6 +125,9 @@ class QdrantIndexer:
             await self._client.get_collection(self._collection)
         except (UnexpectedResponse, ValueError):
             await init_qdrant()
+
+    def point_ids(self, chunks: list[Chunk], document_id: str) -> list[str]:
+        return [_point_id(document_id, chunk.metadata.chunk_index, chunk.text) for chunk in chunks]
 
     async def index(
         self,
@@ -199,8 +206,6 @@ class QdrantIndexer:
         for chunk, vector in zip(chunks, embeddings, strict=True):
             md = chunk.metadata
             access_subjects = [f"user:{scope.user_id}"]
-            if visibility == "organization":
-                access_subjects.append(f"org:{scope.organization_id}")
             if visibility == "shared":
                 access_subjects.extend(f"user:{user_id}" for user_id in sorted(shared_user_ids))
             yield PointStruct(
@@ -222,8 +227,45 @@ class QdrantIndexer:
                     "visibility": visibility,
                     "access_subjects": access_subjects,
                     "authorization_ready": True,
+                    "searchable": False,
                 },
             )
+
+    async def set_searchable(self, document_id: str, searchable: bool) -> None:
+        await self._client.set_payload(
+            collection_name=self._collection,
+            payload={"searchable": searchable},
+            points=Filter(
+                must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
+            ),
+            wait=True,
+        )
+
+    async def delete_document(self, document_id: str) -> None:
+        await self._client.delete(
+            collection_name=self._collection,
+            points_selector=Filter(
+                must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
+            ),
+            wait=True,
+        )
+
+    async def update_access(
+        self, document_id: str, owner_user_id: str, shared_user_ids: frozenset[str]
+    ) -> None:
+        await self._client.set_payload(
+            collection_name=self._collection,
+            payload={
+                "access_subjects": [
+                    f"user:{owner_user_id}",
+                    *[f"user:{v}" for v in sorted(shared_user_ids)],
+                ]
+            },
+            points=Filter(
+                must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
+            ),
+            wait=True,
+        )
 
     async def aclose(self) -> None:
         await self._client.close()

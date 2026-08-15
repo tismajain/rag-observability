@@ -163,6 +163,11 @@ class PipelineRunner:
             raise RuntimeError(f"Meta pipeline not ready: {self._build_error}")
         return self._meta_pipeline
 
+    def invalidate_document_indexes(self) -> None:
+        """Invalidate process-local candidate corpora after lifecycle changes."""
+        if self._retriever is not None:
+            self._retriever.invalidate_sparse_indexes()
+
     # --------------------------------------------------------- meta indexer --
 
     async def _meta_indexer_loop(self) -> None:

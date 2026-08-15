@@ -6,6 +6,9 @@ Kept in one module so the API surface is discoverable and easy to diff.
 
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from src.evaluation.quality_gate import QualityGateResult
@@ -52,6 +55,39 @@ class ErrorResponse(BaseModel):
     error: str
     detail: str
     request_id: str | None = None
+
+
+class DocumentResponse(BaseModel):
+    id: str
+    title: str
+    content_type: str
+    byte_size: int
+    visibility: Literal["private", "shared"]
+    ingestion_status: Literal["queued", "processing", "completed", "failed"]
+    owned_by_requester: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentListResponse(BaseModel):
+    items: list[DocumentResponse]
+    limit: int
+    offset: int
+
+
+class DocumentUpdateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=512)
+
+
+class DocumentShareRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=255)
+
+
+class IngestionJobResponse(BaseModel):
+    id: str
+    document_id: str
+    status: Literal["queued", "processing", "completed", "failed"]
+    error_code: str | None = None
 
 
 # Placeholder schemas for the observability endpoints that land in Phase 6.

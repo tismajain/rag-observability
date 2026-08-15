@@ -45,6 +45,8 @@ dependencies = [
     "slowapi>=0.1.9",
     "PyJWT[crypto]>=2.7,<3",
     "redis>=5.0,<6",
+    "boto3>=1.35,<2",
+    "python-multipart>=0.0.9,<1",
 ]
 
 [project.optional-dependencies]
@@ -127,6 +129,8 @@ module = [
     "ragas.*",
     "datasets.*",
     "langchain_community.*",
+    "boto3.*",
+    "botocore.*",
 ]
 ignore_missing_imports = true
 
@@ -134,3 +138,6 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = [
+    "integration: requires PostgreSQL, Redis, Qdrant, and MinIO services",
+]

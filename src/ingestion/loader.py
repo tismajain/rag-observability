@@ -10,6 +10,7 @@ URL loading is intentionally out of scope for Phase 2.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 
 import structlog
@@ -38,6 +39,28 @@ def _read_pdf(path: Path) -> str:
     reader = PdfReader(str(path))
     pages = [page.extract_text() or "" for page in reader.pages]
     return "\n\n".join(p.strip() for p in pages if p.strip())
+
+
+def load_bytes(filename: str, body: bytes) -> Document:
+    """Load an authorized object-storage payload without materializing a local path."""
+    ext = Path(filename).suffix.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise ValueError(f"Unsupported extension {ext!r}")
+    if ext == ".pdf":
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(body))
+        text = "\n\n".join(
+            value for page in reader.pages if (value := (page.extract_text() or "").strip())
+        )
+    else:
+        text = body.decode("utf-8", errors="replace")
+    return Document(
+        source_file=filename,
+        text=text,
+        file_type=ext.lstrip("."),
+        byte_size=len(body),
+    )
 
 
 def _read_text(path: Path) -> str:
