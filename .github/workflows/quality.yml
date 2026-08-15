@@ -1,0 +1,78 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main, "feature/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  static-and-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ANTHROPIC_API_KEY: test-key
+      OPENAI_API_KEY: test-key
+      ENVIRONMENT: development
+      AUTH__ENABLED: "false"
+      LLM__PROVIDER: mock
+      TIKTOKEN_CACHE_DIR: /tmp/tiktoken-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff format --check .
+      - run: ruff check .
+      - run: mypy
+      - run: python -m compileall -q src cli dashboard tests
+      - run: pytest -m "not integration"
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      POSTGRES_PASSWORD: integration-postgres-password
+      REDIS_PASSWORD: integration-redis-password
+      MINIO_ROOT_USER: integration-minio-user
+      MINIO_ROOT_PASSWORD: integration-minio-password
+      DATABASE_URL: postgresql+asyncpg://postgres:integration-postgres-password@localhost:5432/rag_obs
+      RATE_LIMIT__BACKEND: redis
+      RATE_LIMIT__REDIS_URL: redis://:integration-redis-password@localhost:6379/0
+      OBJECT_STORAGE__ENDPOINT_URL: http://localhost:9000
+      OBJECT_STORAGE__ACCESS_KEY_ID: integration-minio-user
+      OBJECT_STORAGE__SECRET_ACCESS_KEY: integration-minio-password
+      OBJECT_STORAGE__BUCKET: rag-documents-integration
+      QDRANT__HOST: localhost
+      ANTHROPIC_API_KEY: test-key
+      OPENAI_API_KEY: test-key
+      ENVIRONMENT: development
+      AUTH__ENABLED: "false"
+      LLM__PROVIDER: mock
+      RUN_INTEGRATION: "1"
+      TIKTOKEN_CACHE_DIR: /tmp/tiktoken-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: docker compose -f docker-compose.yml -f docker-compose.integration.yml up -d postgres redis qdrant minio
+      - run: |
+          for attempt in {1..30}; do
+            docker compose -f docker-compose.yml -f docker-compose.integration.yml ps --status running | grep -q postgres && break
+            sleep 2
+          done
+      - run: alembic upgrade head
+      - run: alembic downgrade cbb0182b0217
+      - run: alembic upgrade head
+      - run: pytest -m integration tests/integration
+      - if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.integration.yml logs --no-color
+      - if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.integration.yml down -v
