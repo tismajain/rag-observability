@@ -96,10 +96,6 @@ in error details.
 
   app.add_middleware(CORSMiddleware, allow_origins=["https://dashboard.example"])
   ```
-* **Object storage**: the original repository has no upload/download storage
-  abstraction. Document metadata, authorization predicates, Qdrant filters,
-  identity propagation, and RLS exist, but a product-approved encrypted object
-  store is required before exposing document upload/download APIs.
 * **TLS termination**: containers serve plain HTTP. Terminate TLS at a
   load balancer or reverse proxy.
 
@@ -107,3 +103,18 @@ in error details.
 
 This is an internal/demo project. There is no coordinated disclosure
 process. For real deployments, set one up before going live.
+
+## Document content isolation
+
+Document access is owner-or-explicit-share. Organization membership and observability
+administration do not grant content access. The separate `document:content:admin` permission is a
+break-glass capability and is not assigned to observability roles.
+
+JWT identity sets transaction-local PostgreSQL RLS context. SQL resolves active owned/shared rows
+before any object-storage call. Query scope is rebuilt from trusted `document_share` rows. Dense
+search and the BM25 source scroll both require `authorization_ready=true` and `searchable=true`
+before ranking. Consequently legacy, queued, failed-partial, deleting, and deleted vectors cannot
+enter candidates or prompts.
+
+Share removal narrows Qdrant before deleting the database grant; share creation commits the
+database grant before expanding Qdrant. Both sequences favor temporary denial over disclosure.

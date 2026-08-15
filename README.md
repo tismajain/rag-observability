@@ -197,7 +197,8 @@ page in the dashboard.
 * Provider-neutral OIDC, typed principals, explicit permissions, and a separate document-content-admin permission.
 * Redis-backed per-user/per-IP/per-endpoint, concurrency, and model-budget controls in staging/production; memory-only controls are restricted to development/tests.
 * Mandatory pre-ranking Qdrant and scope-specific BM25 authorization filters; legacy unscoped vectors are quarantined.
-* 1 MiB request-body cap before Pydantic parsing, configured under `RESOURCES__MAX_BODY_BYTES`.
+* Bounded request bodies before parsing, configured under `RESOURCES__MAX_BODY_BYTES`; the default
+  includes multipart overhead for the separately enforced 25 MiB document limit.
 * Centralized error handler returns structured `{error, detail, request_id}` envelopes — no stack traces leak to clients.
 * `RAG_ANSWER_PROMPT` hardened against prompt-injection from ingested documents; see [docs/SECURITY.md](docs/SECURITY.md).
 * The repository-specific requirement map and product-decision boundaries are in [docs/OIDC_RBAC_IMPLEMENTATION_PLAN.md](docs/OIDC_RBAC_IMPLEMENTATION_PLAN.md).
@@ -211,3 +212,16 @@ page in the dashboard.
   uvloop — RAGAS's `nest_asyncio` patching cannot patch uvloop.
 - API keys committed to `.env` should be rotated periodically; conversation logs
   and screenshots can leak them inadvertently.
+
+## Secure document lifecycle
+
+Authenticated users can upload and manage documents through `/documents`. Ownership is always
+derived from the verified principal; request bodies contain no owner or organization field.
+
+* `POST /documents` uploads `.txt`, `.md`, `.markdown`, or `.pdf` content and returns `202` with a
+  queued ingestion state.
+* `GET /documents`, metadata, and download routes return only owned or explicitly shared rows.
+* Update, sharing, unsharing, and deletion are owner-only. Missing and unauthorized identifiers
+  both return `404`.
+* Local object storage is MinIO. Production uses the same S3 API by omitting the custom endpoint
+  and supplying workload-scoped AWS credentials.

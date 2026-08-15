@@ -194,3 +194,20 @@ Before tearing down a production deployment:
 * The async eval task fires-and-forgets. In a hot shutdown, in-flight evals
   may be cancelled mid-flight; their failures are logged but not retried.
 * The meta indexer task is cooperatively cancelled in `pipeline_runner.shutdown()`.
+
+## Document backup and deletion
+
+Back up PostgreSQL, the S3/MinIO bucket, and Qdrant snapshots as one recovery set. Restore
+PostgreSQL first because it is the authorization source of truth. Never expose restored Qdrant
+points until their document, authorization, searchable, and access-subject payloads match live
+database rows. Rebuilding vectors from active objects is safer than adopting unscoped points.
+
+Deletion first makes Qdrant points non-searchable, then tombstones PostgreSQL, removes vectors,
+deletes the object, clears chunk rows, and finalizes the tombstone. Retry interrupted deletions;
+never manually reactivate a partial deletion. Production S3 should use encryption, versioning,
+retention policy, and a workload role restricted to the configured bucket prefix.
+
+The default Compose network keeps PostgreSQL, Redis, Qdrant, and MinIO private. Only
+`docker-compose.integration.yml` publishes their ports for local/CI tests. Production additionally
+requires TLS, managed secrets, distinct migration/application/worker database roles, Redis HA, and
+a durable ingestion worker lease or queue.

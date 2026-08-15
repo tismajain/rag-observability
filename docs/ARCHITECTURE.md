@@ -215,3 +215,18 @@ API pods are stateless. Multi-instance deployments need:
 * The background meta indexer runs on every pod by default. Either gate it
   to one pod (e.g. a leader-election flag) or accept the redundant work —
   upserts are idempotent so duplicate runs only burn embeddings cost.
+
+## Document storage and ingestion
+
+`src.storage.object_store:ObjectStore` is the provider-neutral byte-store boundary.
+`S3ObjectStore` uses local MinIO through a custom endpoint and standard AWS S3 when that endpoint
+is omitted. PostgreSQL is authoritative for identity, ownership, shares, opaque object keys,
+hashes, lifecycle state, and ingestion jobs. Qdrant and process-local BM25 corpora are derived.
+
+Uploads create a UUID-keyed object and a `queued` job. The worker transitions
+`queued -> processing -> completed|failed`. It writes points with `searchable=false`; only after
+all batches and chunk records succeed are they enabled. Failure removes partial points and rows.
+
+The bundled worker executes in the API process. Job state survives restarts, but multi-replica
+production needs a dedicated worker with PostgreSQL row leases (`FOR UPDATE SKIP LOCKED`) or an
+external durable queue before uploads are horizontally scaled.
