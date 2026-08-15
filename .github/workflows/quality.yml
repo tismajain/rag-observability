@@ -62,12 +62,10 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -e ".[dev]"
-      - run: docker compose -f docker-compose.yml -f docker-compose.integration.yml up -d postgres redis qdrant minio
-      - run: |
-          for attempt in {1..30}; do
-            docker compose -f docker-compose.yml -f docker-compose.integration.yml ps --status running | grep -q postgres && break
-            sleep 2
-          done
+      - name: Start and await healthy integration services
+        run: >-
+          docker compose -f docker-compose.yml -f docker-compose.integration.yml
+          up -d --wait --wait-timeout 180 postgres redis qdrant minio
       - run: alembic upgrade head
       - run: alembic downgrade cbb0182b0217
       - run: alembic upgrade head

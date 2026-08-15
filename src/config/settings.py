@@ -145,6 +145,7 @@ class ObjectStorageSettings(BaseModel):
     access_key_id: SecretStr | None = None
     secret_access_key: SecretStr | None = None
     secure: bool = False
+    server_side_encryption: Literal["AES256", "aws:kms"] | None = None
     max_upload_bytes: int = Field(default=25 * 1024 * 1024, ge=1024)
 
 

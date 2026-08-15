@@ -58,14 +58,15 @@ class S3ObjectStore:
         await asyncio.to_thread(ensure)
 
     async def put(self, key: str, body: bytes, content_type: str) -> None:
-        await asyncio.to_thread(
-            self._client.put_object,
-            Bucket=self._bucket,
-            Key=key,
-            Body=body,
-            ContentType=content_type,
-            ServerSideEncryption="AES256",
-        )
+        args: dict[str, object] = {
+            "Bucket": self._bucket,
+            "Key": key,
+            "Body": body,
+            "ContentType": content_type,
+        }
+        if self._config.server_side_encryption is not None:
+            args["ServerSideEncryption"] = self._config.server_side_encryption
+        await asyncio.to_thread(self._client.put_object, **args)
 
     async def get(self, key: str) -> bytes:
         def read() -> bytes:
