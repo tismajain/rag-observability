@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+build/
+dist/
+.venv/
+venv/
+
+# Environment
+.env
+.env.*
+!.env.example
+.env.local
+.env.test
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+secrets.toml
+.streamlit/secrets.toml
+
+# Editors
+.vscode/
+.idea/
+.claude/
+
+# OS
+.DS_Store
+
+# Project
+data/documents/*
+!data/documents/.gitkeep
+!data/documents/sample.md
+!data/documents/security.md
+data/uploads/
+data/indexes/
+data/runtime/
+data/snapshots/
+uploads/
+snapshots/
+artifacts/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+qdrant_storage/
+phoenix_data/
+postgres_data/
+redis_data/

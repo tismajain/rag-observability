@@ -1,0 +1,156 @@
+# Local development stack for the RAG observability system.
+#
+# Bring up everything: `docker compose up -d`
+# Tear down (preserving data): `docker compose down`
+# Tear down + wipe volumes:    `docker compose down -v`
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.15.3
+    container_name: rag_obs_qdrant
+    restart: unless-stopped
+    expose:
+      - "6333"
+      - "6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - rag_obs_net
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  postgres:
+    image: postgres:16.10-alpine
+    container_name: rag_obs_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rag_obs
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    expose:
+      - "5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - rag_obs_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rag_obs"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  redis:
+    image: redis:7.4.5-alpine
+    container_name: rag_obs_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}"]
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - rag_obs_net
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: rag_obs_phoenix
+    restart: unless-stopped
+    ports:
+      - "6006:6006"   # UI
+      - "4317:4317"   # OTLP gRPC
+    volumes:
+      - phoenix_data:/mnt/data
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    networks:
+      - rag_obs_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:6006/').status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag_obs_api
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      QDRANT__HOST: qdrant
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/rag_obs
+      RATE_LIMIT__REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/0
+      OBSERVABILITY__PHOENIX_ENDPOINT: http://phoenix:4317
+    ports:
+      - "8000:8000"
+    networks:
+      - rag_obs_net
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      phoenix:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/live').status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: rag_obs_dashboard
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      API_BASE_URL: http://api:8000
+      # Streamlit only adds the script dir (/app/dashboard) to sys.path;
+      # exposing /app lets `from dashboard.api_client import ...` resolve.
+      PYTHONPATH: /app
+    ports:
+      - "8501:8501"
+    networks:
+      - rag_obs_net
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8501/_stcore/health').status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+networks:
+  rag_obs_net:
+    driver: bridge
+
+volumes:
+  qdrant_data:
+  postgres_data:
+  phoenix_data:
+  redis_data:

@@ -1,0 +1,33 @@
+# Streamlit dashboard image (Phase 8).
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # Streamlit puts the script's directory on sys.path but not the project
+    # root. Exposing /app lets pages do `from dashboard.api_client import ...`
+    # instead of fragile sibling imports.
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml ./
+COPY src ./src
+COPY dashboard ./dashboard
+RUN pip install -e ".[dashboard]"
+
+RUN useradd --create-home --shell /usr/sbin/nologin appuser \
+ && chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8501
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=6 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8501/_stcore/health').status==200 else 1)"
+
+CMD ["streamlit", "run", "dashboard/app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]
