@@ -128,12 +128,25 @@ class RateLimitSettings(BaseModel):
 
 
 class ResourceControlSettings(BaseModel):
-    max_body_bytes: int = Field(default=1_048_576, ge=1024)
+    max_body_bytes: int = Field(default=27 * 1024 * 1024, ge=1024)
     max_query_characters: int = Field(default=2000, ge=1)
     max_top_k: int = Field(default=20, ge=1, le=100)
     max_llm_input_tokens: int = Field(default=16_000, ge=1)
     max_llm_output_tokens: int = Field(default=2048, ge=1)
     daily_llm_cost_units_per_user: int = Field(default=100_000, ge=1)
+
+
+class ObjectStorageSettings(BaseModel):
+    """S3-compatible object storage. Endpoint is omitted for AWS S3."""
+
+    endpoint_url: str | None = "http://localhost:9000"
+    region: str = "us-east-1"
+    bucket: str = "rag-documents"
+    access_key_id: SecretStr | None = None
+    secret_access_key: SecretStr | None = None
+    secure: bool = False
+    server_side_encryption: Literal["AES256", "aws:kms"] | None = None
+    max_upload_bytes: int = Field(default=25 * 1024 * 1024, ge=1024)
 
 
 class Settings(BaseSettings):
@@ -156,6 +169,7 @@ class Settings(BaseSettings):
     auth: AuthSettings = AuthSettings()
     rate_limit: RateLimitSettings = RateLimitSettings()
     resources: ResourceControlSettings = ResourceControlSettings()
+    object_storage: ObjectStorageSettings = ObjectStorageSettings()
 
     model_config = SettingsConfigDict(
         env_file=".env",

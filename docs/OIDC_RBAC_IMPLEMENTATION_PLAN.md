@@ -126,3 +126,14 @@ specification file was present in the workspace.
   audit-event sink, and incident response integration.
 - Migration/adoption policy for legacy Qdrant points and legacy observability rows. Secure default:
   quarantine them from normal user retrieval rather than treating them as globally visible.
+
+## Document lifecycle follow-up
+
+The lifecycle implementation uses the stricter owner-or-explicit-share rule. Organization
+visibility remains a legacy schema value but is not an access grant. Primary symbols are
+`src.api.routers.documents:router`, `src.storage.object_store:S3ObjectStore`,
+`src.documents.service:DocumentLifecycleService`, and migration `d4e81f70a922`.
+
+The remaining production decision is durable worker topology. The repository records job state
+durably and executes asynchronously in-process for the single local API replica. Multi-replica
+deployment must add leased job claiming or an external queue before enabling uploads.

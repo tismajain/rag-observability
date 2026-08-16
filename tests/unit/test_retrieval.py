@@ -14,10 +14,16 @@ from unittest.mock import patch
 
 import pytest
 
+from src.auth.principal import AuthorizationScope
 from src.ingestion.chunker import ChunkMetadata
 from src.retrieval.context_assembler import assemble_context
 from src.retrieval.reranker import CrossEncoderReranker
-from src.retrieval.retriever import RRF_K_CONSTANT, HybridRetriever, RetrievedChunk
+from src.retrieval.retriever import (
+    RRF_K_CONSTANT,
+    HybridRetriever,
+    RetrievedChunk,
+    _authorization_filter,
+)
 
 # --------------------------------------------------------------------- helpers
 
@@ -109,6 +115,24 @@ def test_rrf_top_k_caps_output() -> None:
 
 def test_rrf_empty_inputs() -> None:
     assert _fuse([], [], top_k=5) == []
+
+
+def test_authorization_filter_is_fail_closed_before_ranking() -> None:
+    scope = AuthorizationScope("user-a", "org-a", frozenset({"shared-doc"}))
+    payload = _authorization_filter(scope).model_dump(exclude_none=True)
+    rendered = str(payload)
+    assert "authorization_ready" in rendered
+    assert "searchable" in rendered
+    assert "user:user-a" in rendered
+    assert "shared-doc" in rendered
+    assert "org:org-a" not in rendered
+
+
+def test_observability_scope_does_not_bypass_document_filter() -> None:
+    scope = AuthorizationScope("observer", "org-a")
+    rendered = str(_authorization_filter(scope).model_dump(exclude_none=True))
+    assert "user:observer" in rendered
+    assert "org:org-a" not in rendered
 
 
 # -------------------------------------------------------------- Context assembler

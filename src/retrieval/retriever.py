@@ -142,6 +142,10 @@ class HybridRetriever:
         """Force-rebuild the BM25 index by scrolling Qdrant. Returns doc count."""
         return await self._build_bm25(scope, _authorization_filter(scope))
 
+    def invalidate_sparse_indexes(self) -> None:
+        """Drop every scoped BM25 corpus after share, ingestion, or deletion changes."""
+        self._bm25_scoped.clear()
+
     async def aclose(self) -> None:
         await self._client.close()
 
@@ -328,16 +332,14 @@ def _metadata_from_payload(payload: dict[str, Any]) -> ChunkMetadata:
 
 def _authorization_filter(scope: AuthorizationScope) -> Filter:
     """Mandatory pre-ranking filter. Legacy/unscoped points never match."""
-    must = [FieldCondition(key="authorization_ready", match=MatchValue(value=True))]
+    must = [
+        FieldCondition(key="authorization_ready", match=MatchValue(value=True)),
+        FieldCondition(key="searchable", match=MatchValue(value=True)),
+    ]
     if scope.can_access_all_documents:
         return Filter(must=cast(Any, must))
-    # Organization match alone is too broad: require organization visibility
-    # as a nested alternative encoded by an exact access-scope payload value.
     should: list[FieldCondition] = [
         FieldCondition(key="access_subjects", match=MatchValue(value=f"user:{scope.user_id}")),
-        FieldCondition(
-            key="access_subjects", match=MatchValue(value=f"org:{scope.organization_id}")
-        ),
     ]
     if scope.shared_document_ids:
         should.append(

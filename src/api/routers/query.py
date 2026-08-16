@@ -22,6 +22,8 @@ from src.config.settings import settings
 from src.observability.attributes import SpanAttributes
 from src.observability.spans import root_span
 from src.pipeline.pipeline_runner import pipeline_runner
+from src.storage.database import session_scope
+from src.storage.document_store import apply_rls_identity, authorization_scope, ensure_identity
 
 router = APIRouter(tags=["query"])
 log = structlog.get_logger(__name__)
@@ -76,6 +78,10 @@ async def _run_query(
         )
     query_id = str(uuid4())
     pipeline = pipeline_runner.pipeline
+    async with session_scope() as session:
+        await apply_rls_identity(session, principal)
+        await ensure_identity(session, principal)
+        scope = await authorization_scope(session, principal)
     try:
         with root_span(query_id, payload.query) as span:
             result = await pipeline.run(
@@ -83,7 +89,7 @@ async def _run_query(
                 query=payload.query,
                 top_k=payload.top_k,
                 enable_reranking=payload.enable_reranking,
-                scope=principal.authorization_scope(),
+                scope=scope,
             )
             # Roll up summary attributes onto the root span so Phoenix shows
             # the headline numbers without expanding children.

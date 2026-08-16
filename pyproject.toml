@@ -26,7 +26,9 @@ dependencies = [
     "qdrant-client>=1.10",
     "openai>=1.40",
     "tiktoken>=0.7",
-    "numpy>=1.26",
+    # NumPy 2.x stubs use Python 3.12 type syntax, while this project and
+    # strict mypy configuration intentionally retain Python 3.11 support.
+    "numpy>=1.26,<2",
     "tenacity>=8.5",
     "opentelemetry-api>=1.25",
     # Phase 3: hybrid retrieval (BM25 lives in-process; reranker is opt-in)
@@ -45,6 +47,8 @@ dependencies = [
     "slowapi>=0.1.9",
     "PyJWT[crypto]>=2.7,<3",
     "redis>=5.0,<6",
+    "boto3>=1.35,<2",
+    "python-multipart>=0.0.9,<1",
 ]
 
 [project.optional-dependencies]
@@ -127,6 +131,8 @@ module = [
     "ragas.*",
     "datasets.*",
     "langchain_community.*",
+    "boto3.*",
+    "botocore.*",
 ]
 ignore_missing_imports = true
 
@@ -134,3 +140,6 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = [
+    "integration: requires PostgreSQL, Redis, Qdrant, and MinIO services",
+]

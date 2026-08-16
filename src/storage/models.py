@@ -174,8 +174,15 @@ class DocumentRecord(Base):
     )
     visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="private")
     title: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_filename: Mapped[str] = mapped_column(String(512), nullable=False)
     storage_key: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_type: Mapped[str] = mapped_column(
+        String(255), nullable=False, default="application/octet-stream"
+    )
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lifecycle_state: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -187,6 +194,10 @@ class DocumentRecord(Base):
         CheckConstraint(
             "visibility IN ('private', 'organization', 'shared')",
             name="ck_document_visibility",
+        ),
+        CheckConstraint(
+            "lifecycle_state IN ('active', 'deleting', 'deleted')",
+            name="ck_document_lifecycle_state",
         ),
     )
 
@@ -220,7 +231,7 @@ class IngestionJob(Base):
     )
     organization_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     requested_by_user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -228,7 +239,7 @@ class IngestionJob(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'running', 'completed', 'failed', 'cancelled')",
+            "status IN ('queued', 'processing', 'completed', 'failed')",
             name="ck_ingestion_job_status",
         ),
     )

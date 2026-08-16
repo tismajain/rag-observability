@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from src.api.error_handlers import install_error_handlers
 from src.api.middleware import BodySizeLimitMiddleware, RequestIDMiddleware, TimingMiddleware
 from src.api.rate_limit import install_rate_limiting
-from src.api.routers import defects, evals, health, meta, query, traces
+from src.api.routers import defects, documents, evals, health, meta, query, traces
 from src.config.logging import setup_logging
 from src.config.settings import settings
 from src.ingestion.indexer import init_qdrant
@@ -74,6 +74,7 @@ install_rate_limiting(app)
 install_error_handlers(app)
 
 app.include_router(health.router)
+app.include_router(documents.router)
 app.include_router(query.router)
 app.include_router(traces.router)
 app.include_router(defects.router)
