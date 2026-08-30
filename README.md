@@ -1,227 +1,225 @@
 # RAG Observability
 
-Production-grade Retrieval-Augmented Generation system with a full AI observability
-layer: OpenTelemetry tracing into Arize Phoenix, RAGAS-based evaluation, automatic
-defect detection, persistent trace history, a Streamlit dashboard, and a meta-RAG
-that lets engineers query the system's own behavior in natural language.
+An observable Retrieval-Augmented Generation service built with FastAPI. It combines
+authorization-scoped hybrid retrieval, LLM generation, OpenTelemetry traces, heuristic defect
+detection, sampled RAGAS evaluation, and a second RAG pipeline over the system's own trace history.
 
-> **Build status:** All 10 phases complete. See the [build phases table](#build-phases)
-> for what each phase delivered.
+> [!IMPORTANT]
+> This repository is a reference implementation, not a turnkey production service. Ingestion and
+> evaluation run as in-process background work, the optional reranker is not included in the
+> standard API image, and production deployment still requires an external OIDC provider,
+> durable job execution, secret management, and normal operational hardening.
 
-## Quickstart
+## What is implemented
 
-```bash
-cp .env.example .env
-# Edit .env: set ANTHROPIC_API_KEY and OPENAI_API_KEY
-
-make install          # editable install + dev tools
-make dev              # docker compose up + uvicorn --reload
-curl http://localhost:8000/health
-make ingest           # ingest documents from ./data/documents
-```
-
-Then open the dashboard at <http://localhost:8501> and fire a query.
-
-Access points (all on `localhost`):
-
-| Service   | URL                          | Purpose                                                  |
-|-----------|------------------------------|----------------------------------------------------------|
-| API       | <http://localhost:8000>      | FastAPI: `/query`, `/meta/query`, `/traces`, etc.        |
-| Dashboard | <http://localhost:8501>      | Streamlit: traces, defects, eval trends, meta-query      |
-| Phoenix   | <http://localhost:6006>      | OTel trace UI — full span tree per request               |
-| Qdrant    | <http://localhost:6333>      | Vector store (collections: `rag_documents`, `rag_traces`)|
-| Postgres  | `localhost:5432`             | Trace / defect / eval storage                            |
+- FastAPI endpoints for document lifecycle, queries, traces, defects, evaluations, and meta-RAG.
+- Owner-or-explicit-share document access. The verified identity determines the retrieval scope
+  before either dense or BM25 ranking.
+- OpenAI embeddings with Qdrant dense search, in-process BM25, and Reciprocal Rank Fusion (RRF).
+- Anthropic, OpenAI, and deterministic mock generation providers.
+- Optional cross-encoder reranking when the `reranker` extra is installed.
+- OpenTelemetry spans exported to Arize Phoenix.
+- Synchronous heuristic defect detection and sampled, asynchronous RAGAS evaluation.
+- PostgreSQL persistence, MinIO/S3-compatible document storage, and a Streamlit dashboard.
+- Meta-RAG over trace, defect, and evaluation history, refreshed periodically by the API process.
 
 ## Architecture
 
-```
-                  +------------------+
-   user query --> |  FastAPI /query  | --+ OTel spans
-                  +------------------+   |
-                          |              v
-                          v        +-----+--------+
-                 +--------+-------+|   Phoenix    |
-                 | RAG pipeline   ||   (OTLP)     |
-                 |  retrieve →    |+--------------+
-                 |  rerank →      |
-                 |  assemble →    |     +----------+
-                 |  generate →    |---->| Defect   |
-                 |  detect        |     | Detector |
-                 +-------+--------+     +----+-----+
-                         |                   |
-            +------------+------------+      |
-            |            |            |      |
-            v            v            v      v
-       +--------+   +-----------+   +---------------+
-       | Qdrant |   | LLM       |   |  PostgreSQL   |
-       |  docs  |   | Anthropic |   |  traces /     |
-       +--------+   +-----------+   |  defects /    |
-                                    |  eval scores  |
-                                    +-------+-------+
-                                            |
-                                periodic    v
-                                indexer  +---------------+
-                                ─────────►|  Meta-RAG     |
-                                          |  Qdrant       |
-                                          |  trace docs   |
-                                          +-------+-------+
-                                                  ▲
-                                                  │ POST /meta/query
-                                          natural-language
-                                          questions about
-                                          system behavior
+```text
+upload -> MinIO/S3 -> chunk -> embed -> Qdrant
+                    \-> document metadata + access rules -> PostgreSQL
+
+query -> verified principal -> authorized dense + BM25 retrieval -> RRF
+      -> optional reranker -> context assembly -> LLM -> defect checks
+      -> PostgreSQL history + sampled evaluation
+      -> OpenTelemetry -> Phoenix
+
+trace history -> periodic trace indexer -> Qdrant meta collection -> /meta/query
 ```
 
-## API surface
+Retrieval is fail-closed: only points marked both `authorization_ready=true` and
+`searchable=true`, and matching the caller's trusted access subjects, can enter ranking or the
+prompt. See [Security](docs/SECURITY.md) for the full trust model.
 
-| Method | Path                  | Purpose                                                |
-|--------|-----------------------|--------------------------------------------------------|
-| GET    | `/health`             | Service identity + Postgres/Qdrant/Phoenix health      |
-| POST   | `/query`              | Run the RAG pipeline against `rag_documents`           |
-| POST   | `/meta/query`         | Natural-language query over indexed trace history      |
-| GET    | `/traces`             | Paginated list of past `/query` interactions           |
-| GET    | `/traces/{trace_id}`  | Single trace with its defects + eval scores            |
-| GET    | `/defects`            | Paginated defect feed (filters: severity, type, since) |
-| GET    | `/evals`              | Paginated eval scores                                  |
-| GET    | `/evals/summary`      | Aggregate scores + quality-gate distribution           |
+## Local quickstart
 
-Full OpenAPI schema: <http://localhost:8000/docs>.
+Prerequisites: Docker with Compose, Git, and enough memory for the service images. The mock mode
+below avoids calls to Anthropic and OpenAI.
 
-## Defect types
+1. Create the local configuration:
 
-The defect detector runs synchronously inside `/query` after generation and attaches
-events to the OTel span:
+   ```bash
+   cp .env.example .env
+   ```
 
-| Defect                        | Severity | Trigger                                                   |
-|-------------------------------|----------|-----------------------------------------------------------|
-| `DEFECT_EMPTY_RETRIEVAL`      | CRITICAL | Retrieval returned zero chunks                            |
-| `DEFECT_LOW_RETRIEVAL_QUALITY`| HIGH     | Best chunk's dense (or sparse) score < threshold          |
-| `DEFECT_CONTEXT_TRUNCATED`    | MEDIUM   | Retrieved chunks exceeded the context token budget        |
-| `DEFECT_LOW_CHUNK_DIVERSITY`  | LOW      | All retrieved chunks came from a single source document   |
-| `DEFECT_HALLUCINATION_SIGNAL` | HIGH     | Generated answer's content-word overlap with context < 15%|
+   Replace the four `replace-with-...` values used by Compose
+   (`POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `MINIO_ROOT_USER`, and
+   `MINIO_ROOT_PASSWORD`). Then set:
 
-## Build phases
+   ```dotenv
+   LLM__PROVIDER=mock
+   ANTHROPIC_API_KEY=local-placeholder
+   AUTH__ENABLED=false
+   AUTH__PROTECT_API_DOCS=false
+   ```
 
-| Phase | Scope                                                           | Status   |
-|-------|-----------------------------------------------------------------|----------|
-| 1     | Config, logging, Docker Compose, `/health`                      | Complete |
-| 2     | Ingestion (loader, chunker, embedder, indexer)                  | Complete |
-| 3     | Hybrid retrieval (dense + BM25 + RRF) + reranker + assembler    | Complete |
-| 4     | OTel tracing → Phoenix, defect detection, RAGAS evaluation      | Complete |
-| 5     | API endpoints (`/query` + generation + pipeline composition)    | Complete |
-| 6     | Persistence (SQLAlchemy async + Alembic + 3 CRUD stores)        | Complete |
-| 7     | Meta-RAG over trace history (`/meta/query` + periodic indexer)  | Complete |
-| 8     | Streamlit dashboard (traces, defects, evals, meta query)        | Complete |
-| 9     | Test suites (139 unit + API tests, in-process integration)      | Complete |
-| 10    | Production hardening: rate limits, error envelope, prompt-injection, docs sweep | Complete |
+   `ANTHROPIC_API_KEY` must currently be non-empty because it is a required application setting;
+   mock mode does not send it to a provider.
 
-## Environment variables
+2. Build the images and start the dependencies:
 
-All settings live in `.env`. Nested fields use `__` as the delimiter.
+   ```bash
+   docker compose build
+   docker compose up -d --wait postgres redis qdrant minio phoenix
+   ```
 
-| Variable                                       | Required | Default                          | Notes                                            |
-|------------------------------------------------|:--------:|----------------------------------|--------------------------------------------------|
-| `ENVIRONMENT`                                  |          | `development`                    | `development` / `staging` / `production`         |
-| `LOG_LEVEL`                                    |          | `INFO`                           |                                                  |
-| `ANTHROPIC_API_KEY`                            | yes      | -                                | App fails fast at import if missing              |
-| `OPENAI_API_KEY`                               |          | -                                | Required for embeddings + RAGAS judge            |
-| `DATABASE_URL`                                 |          | `postgresql+asyncpg://...`       | asyncpg URL                                      |
-| `QDRANT__HOST`                                 |          | `localhost`                      |                                                  |
-| `QDRANT__PORT`                                 |          | `6333`                           |                                                  |
-| `QDRANT__COLLECTION_NAME`                      |          | `rag_documents`                  | Document chunks                                  |
-| `QDRANT__META_COLLECTION_NAME`                 |          | `rag_traces`                     | Meta-RAG trace index                             |
-| `QDRANT__VECTOR_SIZE`                          |          | `1536`                           | Must match embedding model                       |
-| `LLM__PROVIDER`                                |          | `anthropic`                      | `anthropic`, `openai`, or `mock` (keyless echo)  |
-| `LLM__MODEL`                                   |          | `claude-sonnet-4-6`              |                                                  |
-| `LLM__TEMPERATURE`                             |          | `0.0`                            |                                                  |
-| `LLM__MAX_TOKENS`                              |          | `2048`                           |                                                  |
-| `LLM__TIMEOUT_SECONDS`                         |          | `30`                             |                                                  |
-| `LLM__MAX_RETRIES`                             |          | `3`                              |                                                  |
-| `OBSERVABILITY__PHOENIX_ENDPOINT`              |          | `http://localhost:4317`          | OTLP gRPC                                        |
-| `OBSERVABILITY__ENABLE_CONSOLE_EXPORTER`       |          | `false`                          | Local debug only                                 |
-| `OBSERVABILITY__SAMPLE_RATE_FOR_EVAL`          |          | `0.2`                            | Fraction of queries evaluated by RAGAS           |
-| `OBSERVABILITY__DEFECT_SIMILARITY_THRESHOLD`   |          | `0.65`                           | Below this triggers LOW_RETRIEVAL_QUALITY defect |
-| `RATE_LIMIT_ENABLED`                           |          | `true`                           | Set `false` to disable per-IP rate limits        |
-| `RATE_LIMIT_QUERY`                             |          | `30/minute`                      | slowapi limit string for `/query`                |
-| `RATE_LIMIT_META_QUERY`                        |          | `20/minute`                      | slowapi limit string for `/meta/query`           |
-| `MAX_BODY_BYTES`                               |          | `1048576`                        | Max request body size (1 MiB default)            |
+3. Apply the database migrations. The bind mount is needed because `alembic.ini` is not copied
+   into the current API image:
 
-## Make targets
+   ```bash
+   docker compose run --rm \
+     -v "$PWD/alembic.ini:/app/alembic.ini:ro" \
+     api alembic upgrade head
+   ```
 
-```
-make install    # editable install + dev tools
-make dev        # docker compose up -d && uvicorn --reload
-make ingest     # python -m cli.ingest --dir ./data/documents
-make test       # full test suite
-make test-unit  # unit tests only
-make lint       # ruff + mypy
-make migrate    # alembic upgrade head
-make down       # stop docker services
-make clean      # stop and wipe volumes
-```
+4. Start the application:
 
-## Optional extras
+   ```bash
+   docker compose up -d --wait api dashboard
+   curl http://localhost:8000/health/live
+   ```
 
-Heavy deps live behind `pip install -e ".[<extra>]"` so the base install stays light:
+Open the [dashboard](http://localhost:8501), [Phoenix](http://localhost:6006), or the
+[OpenAPI UI](http://localhost:8000/docs). The OpenAPI UI is available in this quickstart because
+`AUTH__PROTECT_API_DOCS=false`.
 
-| Extra        | Brings in                                | Use when                                 |
-|--------------|------------------------------------------|------------------------------------------|
-| `dev`        | pytest, ruff, mypy, ipython              | local development                        |
-| `dashboard`  | streamlit, pandas                        | running the Streamlit container          |
-| `reranker`   | sentence-transformers (~2GB torch)       | enabling cross-encoder reranking         |
-| `eval`       | ragas, datasets (langchain stack)        | enabling in-process RAGAS evaluation     |
+The default Compose network publishes only the application-facing ports:
 
-## Trace indexing for meta-RAG
+| Service | Local URL | Purpose |
+| --- | --- | --- |
+| API | <http://localhost:8000> | FastAPI and OpenAPI |
+| Dashboard | <http://localhost:8501> | Trace, defect, evaluation, and query views |
+| Phoenix | <http://localhost:6006> | OpenTelemetry trace UI |
 
-The meta-RAG layer indexes `Trace + DefectEvent + EvalScore` rows into a separate
-Qdrant collection (`rag_traces`). The API process runs a background indexer every
-15 minutes; for ad-hoc reindexing run:
+PostgreSQL, Redis, Qdrant, and MinIO remain internal to the Compose network. The
+`docker-compose.integration.yml` override publishes their ports for host-run integration tests.
+
+## Try the API
+
+With authentication disabled, requests run as one local development user. Upload a supported
+`.txt`, `.md`, `.markdown`, or `.pdf` file:
 
 ```bash
-python -m cli.index_traces                          # full reindex (bounded by --limit)
-python -m cli.index_traces --window-minutes 60      # last hour only
-docker compose exec api python -m cli.index_traces  # inside the container
+curl -X POST http://localhost:8000/documents \
+  -F "file=@docs/SECURITY.md" \
+  -F "title=Security model"
 ```
 
-Then ask the system about itself: `POST /meta/query`, or open the **Meta Query**
-page in the dashboard.
+The upload returns `202` while ingestion continues in an in-process background task. Poll
+`GET /documents` until `ingestion_status` is `completed`, then query it:
 
-## Documentation
+```bash
+curl -X POST http://localhost:8000/query \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"How is document access enforced?","top_k":5}'
+```
 
-* [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — layer breakdown, request lifecycle, meta-RAG flow, design decisions, deployment topology.
-* [docs/OPERATIONS.md](docs/OPERATIONS.md) — runbook: key rotation, scaling, common issues, health probes, shutdown checklist.
-* [docs/SECURITY.md](docs/SECURITY.md) — threat model, prompt-injection defenses, what's enforced and what isn't.
+Mock mode uses deterministic local embeddings and echoes the assembled context. For real model
+output, select `LLM__PROVIDER=anthropic` or `openai` and provide the matching provider key.
 
-## Production hardening (Phase 10)
+## API
 
-* Provider-neutral OIDC, typed principals, explicit permissions, and a separate document-content-admin permission.
-* Redis-backed per-user/per-IP/per-endpoint, concurrency, and model-budget controls in staging/production; memory-only controls are restricted to development/tests.
-* Mandatory pre-ranking Qdrant and scope-specific BM25 authorization filters; legacy unscoped vectors are quarantined.
-* Bounded request bodies before parsing, configured under `RESOURCES__MAX_BODY_BYTES`; the default
-  includes multipart overhead for the separately enforced 25 MiB document limit.
-* Centralized error handler returns structured `{error, detail, request_id}` envelopes — no stack traces leak to clients.
-* `RAG_ANSWER_PROMPT` hardened against prompt-injection from ingested documents; see [docs/SECURITY.md](docs/SECURITY.md).
-* The repository-specific requirement map and product-decision boundaries are in [docs/OIDC_RBAC_IMPLEMENTATION_PLAN.md](docs/OIDC_RBAC_IMPLEMENTATION_PLAN.md).
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/health/live` | public | Process liveness |
+| `GET` | `/health/ready` | observability admin | PostgreSQL, Qdrant, and Phoenix status |
+| `POST` | `/documents` | document create | Upload and queue ingestion |
+| `GET` | `/documents` | document read | List owned or explicitly shared documents |
+| `GET/PATCH/DELETE` | `/documents/{id}` | route-specific document permission | Read, rename, or delete a document |
+| `POST/DELETE` | `/documents/{id}/shares...` | document share | Manage explicit user shares |
+| `POST` | `/query` | query execute | Run the document RAG pipeline |
+| `GET` | `/traces`, `/defects`, `/evals` | observability read | Inspect persisted telemetry |
+| `GET` | `/evals/summary` | observability read | Aggregate evaluation and quality-gate results |
+| `POST` | `/meta/query` | observability read | Query indexed trace history |
 
-## Notes
+When `AUTH__ENABLED=true`, the API verifies JWT signatures and configured issuer/audience claims
+through JWKS. Roles and explicit permissions come only from the verified token. Observability
+administration does not grant access to document content; that requires the separate
+`document:content:admin` permission.
 
-- Docker Compose requires explicit PostgreSQL and Redis passwords and does not
-  publish database/vector-store ports by default.
-- `make ingest` requires `OPENAI_API_KEY` to be set (for embeddings).
-- The Dockerfile starts uvicorn with `--loop asyncio` rather than the default
-  uvloop — RAGAS's `nest_asyncio` patching cannot patch uvloop.
-- API keys committed to `.env` should be rotated periodically; conversation logs
-  and screenshots can leak them inadvertently.
+## Retrieval and observability semantics
 
-## Secure document lifecycle
+- Dense and BM25 candidates are independently retrieved within the same authorization scope and
+  fused with RRF (`k=60`).
+- Cross-encoder reranking is optional. The standard Dockerfile installs `dev` and `eval`, but not
+  `reranker`, so Compose preserves the RRF order unless the image is extended.
+- Defect detection is synchronous and heuristic. It flags empty/low-quality retrieval, context
+  truncation, low source diversity, and low answer/context word overlap.
+- RAGAS evaluation is sampled after generation and scheduled in the API process. The current
+  `context_recall` value uses the generated answer as its reference and should be interpreted as a
+  proxy, not independent answer accuracy.
+- Trace, defect, and evaluation persistence is best-effort. The API response may succeed during a
+  telemetry database failure.
+- The meta indexer starts in the API process, waits 30 seconds, then refreshes a rolling window
+  every 15 minutes. Use `python -m cli.index_traces` for an explicit backfill.
 
-Authenticated users can upload and manage documents through `/documents`. Ownership is always
-derived from the verified principal; request bodies contain no owner or organization field.
+## Configuration
 
-* `POST /documents` uploads `.txt`, `.md`, `.markdown`, or `.pdf` content and returns `202` with a
-  queued ingestion state.
-* `GET /documents`, metadata, and download routes return only owned or explicitly shared rows.
-* Update, sharing, unsharing, and deletion are owner-only. Missing and unauthorized identifiers
-  both return `404`.
-* Local object storage is MinIO. Production uses the same S3 API by omitting the custom endpoint
-  and supplying workload-scoped AWS credentials.
+Settings are loaded from `.env`; nested fields use `__` (for example,
+`QDRANT__COLLECTION_NAME`). Start from [.env.example](.env.example), which documents the complete
+set. The most important groups are:
+
+| Group | Examples | Notes |
+| --- | --- | --- |
+| Identity | `AUTH__ENABLED`, `AUTH__ISSUER`, `AUTH__AUDIENCE`, `AUTH__JWKS_URI` | OIDC is mandatory in staging/production |
+| Models | `LLM__PROVIDER`, `LLM__MODEL`, provider API keys | Mock mode is keyless at runtime |
+| Storage | `DATABASE_URL`, `QDRANT__*`, `OBJECT_STORAGE__*` | MinIO is the local S3-compatible store |
+| Controls | `RATE_LIMIT__*`, `RESOURCES__*` | Redis controls are mandatory outside development |
+| Telemetry | `OBSERVABILITY__*` | Phoenix OTLP endpoint, sampling, and thresholds |
+
+Do not commit `.env`. Use workload-scoped credentials and a secrets manager outside local
+development.
+
+## Development
+
+The project supports Python 3.11 and 3.12.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+make test-unit
+make lint
+```
+
+Optional dependency groups:
+
+| Extra | Installs | Use |
+| --- | --- | --- |
+| `dev` | pytest, Ruff, mypy, IPython | Local development and tests |
+| `dashboard` | Streamlit, pandas | Host-run dashboard |
+| `reranker` | sentence-transformers and PyTorch | Cross-encoder reranking |
+| `eval` | RAGAS and datasets | Sampled evaluation |
+
+The test suite may need a pre-cached `cl100k_base` tokenizer asset in network-restricted
+environments. Integration tests also require the published dependency ports:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.integration.yml up -d --wait \
+  postgres redis qdrant minio
+pytest -m integration
+```
+
+The legacy `make ingest` CLI writes directly to Qdrant and does not complete the database-backed
+document lifecycle. Prefer `POST /documents` for retrievable application content.
+
+## Operations and security
+
+- [Architecture](docs/ARCHITECTURE.md) — components, request lifecycle, and design decisions
+- [Operations](docs/OPERATIONS.md) — probes, scaling, key rotation, and incident procedures
+- [Security](docs/SECURITY.md) — trust boundaries, authorization, and residual risks
+- [OIDC/RBAC implementation map](docs/OIDC_RBAC_IMPLEMENTATION_PLAN.md) — requirement-to-code map
+
+Stop the stack with `docker compose down`. Add `-v` only when you intentionally want to delete all
+local PostgreSQL, Qdrant, Redis, MinIO, and Phoenix volumes.
